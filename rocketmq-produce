@@ -1,0 +1,83 @@
+package rocketMq
+
+import (
+	"context"
+	"fmt"
+	"github.com/apache/rocketmq-client-go/v2"
+	"github.com/apache/rocketmq-client-go/v2/primitive"
+	"github.com/apache/rocketmq-client-go/v2/producer"
+	"go.uber.org/zap"
+)
+
+type RocketMq struct {
+	Host string
+	Port string
+}
+
+type DemoListener struct {
+}
+
+type RocketMqClient interface {
+	SendOrdinaryMessage(topic string, body []byte) error                        //发送普通消息
+	SednDelayedMessage(retries int, topic string, body []byte, level int) error //发送延时消息
+	//SendTranscationMessage() error    //发送事务消息
+}
+
+func NewRocketMqClient(host string, port string) RocketMqClient {
+	return &RocketMq{
+		Host: host,
+		Port: port,
+	}
+}
+
+// SendOrdinaryMessage  发送普通消息
+func (r *RocketMq) SendOrdinaryMessage(topic string, body []byte) error {
+	cilent, err := rocketmq.NewProducer(producer.WithNameServer([]string{r.Host + ":" + r.Port}))
+	if err != nil {
+		zap.S().Panic("rocketmq connection error" + err.Error())
+		panic(err)
+	}
+	//启动生产者
+	if err := cilent.Start(); err != nil {
+		panic("Error starting producer")
+	}
+	//发送消息
+	result, err := cilent.SendSync(context.Background(), primitive.NewMessage(topic, body))
+	if err != nil {
+		panic(err)
+	}
+	zap.S().Info("普通消息发送结果：：：", result)
+	//关闭
+	if err := cilent.Shutdown(); err != nil {
+		panic("Error Shutdown producer")
+	}
+	return nil
+}
+
+// SednDelayedMessage 发送延时消息 Xshell-124.221.230.66:9999
+func (r *RocketMq) SednDelayedMessage(retries int, topic string, body []byte, level int) error {
+	p, err := rocketmq.NewProducer(
+		producer.WithNsResolver(primitive.NewPassthroughResolver([]string{r.Host + ":" + r.Port})),
+		producer.WithRetry(retries), //指定重试次数
+	)
+	if err != nil {
+		panic(err)
+	}
+	if err = p.Start(); err != nil {
+		panic("启动producer失败")
+	}
+	// 构建一个消息
+	message := primitive.NewMessage(topic, body)
+	// 给message设置延迟级别 "1s 5s 10s 30s 1m 2m 3m 4m 5m 6m 7m 8m 9m 10m 20m 30m 1h 2h"
+	message.WithDelayTimeLevel(level)
+	res, err := p.SendSync(context.Background(), message)
+	if err != nil {
+		fmt.Printf("send message error: %s\n", err)
+	} else {
+		fmt.Printf("send message success: result=%s\n", res.String())
+	}
+	if err = p.Shutdown(); err != nil {
+		panic("关闭producer失败")
+	}
+	return nil
+}
