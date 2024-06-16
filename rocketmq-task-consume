@@ -9,7 +9,7 @@ import (
 	"log"
 	"time"
 )
-
+//http://124.221.230.66:9999/#/message
 func main() {
 	c, err := rocketmq.NewPushConsumer(
 		consumer.WithGroupName("test"),
