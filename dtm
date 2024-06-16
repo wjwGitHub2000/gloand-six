@@ -1,3 +1,33 @@
+package dtm
+
+import (
+	"fmt"
+	"github.com/dtm-labs/dtm/client/dtmgrpc"
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
+	"log"
+)
+
+// AffairsDtm dtm分布式事务(需要先启动dtm本地部署原文件dtm-/main.go,可以访问网站后再调用方法)
+//docker-dtm 127.0.0.1:36789
+// 例:Host:Port/127.0.0.1:36790
+// 例:rpcHost:rpcPort/127.0.0.1:8080(rpc服务端口)
+// 例:proto、protoRollback为proto两个logic文件的路径(score.score/Create&&score.score/DtmCreate)
+// payload为api端调用rpc端的结构体例如:&score.CreateScoreReq
+
+func AffairsDtm(payload proto.Message) bool {
+	gid := uuid.NewString()
+	saga := dtmgrpc.NewSagaGrpc(fmt.Sprintf("%s:%d", "127.0.0.1", 36790), gid).
+		Add(fmt.Sprintf("%s:%d/%s", "127.0.0.1", 8080, "order.Order/OrderCreate"), fmt.Sprintf("%s:%d/%s", "127.0.0.1", 8080, "order.Order/OrderCreateDtm"), payload)
+	err := saga.Submit()
+	if err != nil {
+		log.Fatal(err)
+		return false
+	}
+	return true
+}
+
+------------------------------------------------------------------------------------------------------------------------------
 package logic
 
 import (
