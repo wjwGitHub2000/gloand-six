@@ -1,0 +1,142 @@
+package logic
+
+import (
+	"context"
+	"fmt"
+	"github.com/dtm-labs/dtm/client/dtmgrpc"
+	"github.com/google/uuid"
+	"log"
+	"monthzc/models/redis"
+	"monthzc/rpc/order"
+	"strconv"
+
+	"monthzc/api/internal/svc"
+	"monthzc/api/internal/types"
+
+	"github.com/zeromicro/go-zero/core/logx"
+)
+
+type OrderCreateLogic struct {
+	logx.Logger
+	ctx    context.Context
+	svcCtx *svc.ServiceContext
+}
+
+func NewOrderCreateLogic(ctx context.Context, svcCtx *svc.ServiceContext) *OrderCreateLogic {
+	return &OrderCreateLogic{
+		Logger: logx.WithContext(ctx),
+		ctx:    ctx,
+		svcCtx: svcCtx,
+	}
+}
+
+func (l *OrderCreateLogic) OrderCreate(req *types.OrderCreateRequest) (resp *types.Response, err error) {
+	//todo: dtm事务
+	gid := uuid.NewString()
+	saga := dtmgrpc.NewSagaGrpc(fmt.Sprintf("%s:%d", "127.0.0.1", 36790), gid).
+		Add(fmt.Sprintf("%s:%d/%s", "127.0.0.1", 8080, "order.Order/OrderCreate"), fmt.Sprintf("%s:%d/%s", "127.0.0.1", 8080, "order.Order/OrderCreateDtm"), &order.OrderCreateRequest{
+			UserId:   int64(req.UserId),
+			GoodsId:  int64(req.GoodsId),
+			TotCount: int64(req.TotCount),
+			Payment:  int64(req.Payment),
+		})
+	err = saga.Submit()
+	if err != nil {
+		log.Fatal(err)
+	}
+	create, err := l.svcCtx.OrderRpc.OrderCreate(l.ctx, &order.OrderCreateRequest{
+		UserId:   int64(req.UserId),
+		GoodsId:  int64(req.GoodsId),
+		TotCount: int64(req.TotCount),
+		Payment:  int64(req.Payment),
+	})
+	if err != nil {
+		return nil, err
+	}
+	//todo:下单完毕删除锁
+	err = redis.OrderSetDel(strconv.Itoa(req.UserId))
+	if err != nil {
+		return nil, err
+	}
+
+	return &types.Response{
+		Code:    0,
+		Message: "订单创建成功",
+		Data: map[string]interface{}{
+			"OrderNumber": create.OrderNumber,
+		},
+	}, nil
+}
+------------------------------------------------------------------------------------------------------------------------------------------
+package logic
+
+import (
+	"context"
+	"errors"
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"monthzc/common/rocketMq"
+	"monthzc/models/mysql"
+	"monthzc/models/redis"
+	"monthzc/rpc/internal/svc"
+	"monthzc/rpc/order"
+	"strconv"
+
+	"github.com/zeromicro/go-zero/core/logx"
+)
+
+type OrderCreateLogic struct {
+	ctx    context.Context
+	svcCtx *svc.ServiceContext
+	logx.Logger
+}
+
+func NewOrderCreateLogic(ctx context.Context, svcCtx *svc.ServiceContext) *OrderCreateLogic {
+	return &OrderCreateLogic{
+		ctx:    ctx,
+		svcCtx: svcCtx,
+		Logger: logx.WithContext(ctx),
+	}
+}
+
+func (l *OrderCreateLogic) OrderCreate(in *order.OrderCreateRequest) (*order.Response, error) {
+	//todo:redis锁确保不会超卖
+	err := redis.OrderSetNx(strconv.Itoa(int(in.UserId)))
+	if err != nil {
+		return nil, err
+	}
+	get, err := mysql.GoodsGet(int(in.GoodsId))
+	if err != nil {
+		return nil, err
+	}
+	//todo:判断库存是否充足
+	if get.GoodsStock < int(in.TotCount) {
+		return nil, errors.New("库存不足")
+	}
+	OrderNumber := uuid.NewString()
+	TotPrice := get.GoodsPrice * int(in.TotCount)
+	orderData := &mysql.Order{
+		Model:       gorm.Model{},
+		UserId:      int(in.UserId),
+		GoodsId:     int(in.GoodsId),
+		OrderNumber: OrderNumber,
+		GoodsName:   get.GoodsName,
+		GoodsPrice:  get.GoodsPrice,
+		TotCount:    int(in.TotCount),
+		TotPrice:    TotPrice,
+		Payment:     int(in.Payment),
+	}
+	err = mysql.OrderCreate(orderData)
+	if err != nil {
+		return nil, err
+	}
+	err = mysql.GoodsStock(int(in.GoodsId), get.GoodsStock-int(in.TotCount))
+	if err != nil {
+		return nil, errors.New("库存删除失败")
+	}
+	//生产消息
+	o := "order_id_" + strconv.Itoa(int(orderData.ID)) + "_" + OrderNumber
+	client := rocketMq.NewRocketMqClient("124.221.230.66", "9876")
+	client.SednDelayedMessage(2, "test", []byte(o), 3) //9-五分钟
+	return &order.Response{Success: true, OrderNumber: OrderNumber}, nil
+}
