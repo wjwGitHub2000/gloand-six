@@ -1,4 +1,4 @@
-package rocketMq
+package main
 
 import (
 	"context"
@@ -6,11 +6,11 @@ import (
 	"github.com/apache/rocketmq-client-go/v2"
 	"github.com/apache/rocketmq-client-go/v2/consumer"
 	"github.com/apache/rocketmq-client-go/v2/primitive"
+	"log"
 	"time"
 )
 
-// Consume 消费者Xshell-124.221.230.66:9999
-func Consume() {
+func main() {
 	c, err := rocketmq.NewPushConsumer(
 		consumer.WithGroupName("test"),
 		consumer.WithNsResolver(primitive.NewPassthroughResolver([]string{"124.221.230.66:9876"})),
@@ -24,6 +24,7 @@ func Consume() {
 		func(ctx context.Context, msgs ...*primitive.MessageExt) (consumer.ConsumeResult, error) {
 			for i := range msgs {
 				fmt.Printf("获取到值： %v \n", msgs[i])
+				log.Printf("订单超时===详情： %v \n", string(msgs[i].Body))
 				fmt.Printf("body值： %v \n", string(msgs[i].Body))
 			}
 			//逻辑处理
